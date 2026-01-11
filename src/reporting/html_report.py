@@ -118,11 +118,11 @@ REPORT_TEMPLATE = """
         <h2>Performance Summary</h2>
         <div class="metrics-grid">
             <div class="metric-card">
-                <div class="metric-value {{ 'positive' if sharpe > 0 else 'negative' }}">{{ sharpe }}</div>
+                <div class="metric-value {{ sharpe_class }}">{{ sharpe }}</div>
                 <div class="metric-label">Sharpe Ratio</div>
             </div>
             <div class="metric-card">
-                <div class="metric-value {{ 'positive' if ann_return > 0 else 'negative' }}">{{ ann_return }}</div>
+                <div class="metric-value {{ return_class }}">{{ ann_return }}</div>
                 <div class="metric-label">Annual Return</div>
             </div>
             <div class="metric-card">
@@ -264,7 +264,9 @@ def generate_report(
         title=f"Backtest Report: {result.params}",
         generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         sharpe=f"{metrics.sharpe:.3f}",
+        sharpe_class="positive" if metrics.sharpe > 0 else "negative",
         ann_return=f"{metrics.ann_return:.2%}",
+        return_class="positive" if metrics.ann_return > 0 else "negative",
         ann_vol=f"{metrics.ann_vol:.2%}",
         max_drawdown=f"{metrics.max_drawdown:.2%}",
         calmar=f"{metrics.calmar:.3f}" if metrics.calmar else "N/A",
