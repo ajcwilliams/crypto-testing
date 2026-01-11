@@ -80,6 +80,49 @@ def compute_double_sort_positions(
     return positions
 
 
+def compute_adaptive_positions(
+    funding_signal: pd.DataFrame,
+    momentum_signal: pd.DataFrame,
+    long_pct: float = 0.2,
+    short_pct: float = 0.2,
+) -> pd.DataFrame:
+    """
+    Adaptive position assignment using percentile ranks.
+    Works better for small universes.
+
+    Long: Top long_pct of momentum AND bottom long_pct of funding
+    Short: Bottom short_pct of momentum AND top short_pct of funding
+
+    Args:
+        funding_signal: DataFrame of funding signals (raw, not quintiled)
+        momentum_signal: DataFrame of momentum signals (raw, not quintiled)
+        long_pct: Top/bottom percentile for long positions
+        short_pct: Top/bottom percentile for short positions
+
+    Returns:
+        DataFrame of positions (-1, 0, 1)
+    """
+    # Rank signals cross-sectionally (0 to 1)
+    funding_rank = funding_signal.rank(axis=1, pct=True)  # Lower = better carry
+    momentum_rank = momentum_signal.rank(axis=1, pct=True)  # Higher = better momentum
+
+    positions = pd.DataFrame(
+        0,
+        index=funding_signal.index,
+        columns=funding_signal.columns,
+    )
+
+    # LONG: High momentum (top pct) AND low funding (bottom pct)
+    long_mask = (momentum_rank >= (1 - long_pct)) & (funding_rank <= long_pct)
+    positions[long_mask] = Position.LONG.value
+
+    # SHORT: Low momentum (bottom pct) AND high funding (top pct)
+    short_mask = (momentum_rank <= short_pct) & (funding_rank >= (1 - short_pct))
+    positions[short_mask] = Position.SHORT.value
+
+    return positions
+
+
 def compute_double_sort_signals(
     prices: pd.DataFrame,
     returns: pd.DataFrame,
@@ -87,6 +130,9 @@ def compute_double_sort_signals(
     funding_lookback: int,
     momentum_lookback: int,
     risk_adjusted: bool = True,
+    use_composite: bool = True,
+    long_pct: float = 0.2,
+    short_pct: float = 0.2,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Compute double-sort signals and positions.
@@ -98,9 +144,12 @@ def compute_double_sort_signals(
         funding_lookback: Lookback for funding signal (8h periods)
         momentum_lookback: Lookback for momentum signal (8h periods)
         risk_adjusted: Use risk-adjusted momentum
+        use_composite: If True, use composite ranking instead of quintile corners
+        long_pct: Top percentile for long positions (default 20%)
+        short_pct: Bottom percentile for short positions (default 20%)
 
     Returns:
-        Tuple of (funding_quintiles, momentum_quintiles, positions)
+        Tuple of (funding_signal, momentum_signal, positions)
     """
     # Compute signals
     funding_signal = compute_funding_signal(funding, funding_lookback)
@@ -108,20 +157,79 @@ def compute_double_sort_signals(
         prices, returns, momentum_lookback, risk_adjusted=risk_adjusted
     )
 
-    # Assign quintiles
-    funding_quintiles = assign_funding_quintile(funding_signal, ascending=True)
-    momentum_quintiles = assign_momentum_quintile(momentum_signal, ascending=False)
+    if use_composite:
+        # Use composite ranking approach
+        positions = compute_composite_positions(
+            funding_signal, momentum_signal,
+            long_pct=long_pct, short_pct=short_pct
+        )
+    else:
+        # Legacy quintile corners approach
+        funding_quintiles = assign_funding_quintile(funding_signal, ascending=True)
+        momentum_quintiles = assign_momentum_quintile(momentum_signal, ascending=False)
+        config = DoubleSortConfig(
+            funding_lookback=funding_lookback,
+            momentum_lookback=momentum_lookback,
+        )
+        positions = compute_double_sort_positions(
+            funding_quintiles, momentum_quintiles, config
+        )
 
-    # Compute positions
-    config = DoubleSortConfig(
-        funding_lookback=funding_lookback,
-        momentum_lookback=momentum_lookback,
-    )
-    positions = compute_double_sort_positions(
-        funding_quintiles, momentum_quintiles, config
+    return funding_signal, momentum_signal, positions
+
+
+def compute_composite_positions(
+    funding_signal: pd.DataFrame,
+    momentum_signal: pd.DataFrame,
+    long_pct: float = 0.2,
+    short_pct: float = 0.2,
+) -> pd.DataFrame:
+    """
+    Compute positions using composite ranking across both signals.
+
+    Composite score = average of:
+    - Funding rank (lower funding = higher rank, better for longs)
+    - Momentum rank (higher momentum = higher rank)
+
+    Long: Top long_pct by composite score
+    Short: Bottom short_pct by composite score
+
+    Args:
+        funding_signal: DataFrame of funding signals
+        momentum_signal: DataFrame of momentum signals
+        long_pct: Top percentile for long positions
+        short_pct: Bottom percentile for short positions
+
+    Returns:
+        DataFrame of positions (-1, 0, 1)
+    """
+    # Rank signals cross-sectionally (0 to 1)
+    # For funding: lower is better, so we invert (1 - rank)
+    funding_rank = 1 - funding_signal.rank(axis=1, pct=True)
+    # For momentum: higher is better
+    momentum_rank = momentum_signal.rank(axis=1, pct=True)
+
+    # Composite score = average of ranks
+    composite = (funding_rank + momentum_rank) / 2
+
+    # Rank the composite score
+    composite_rank = composite.rank(axis=1, pct=True)
+
+    positions = pd.DataFrame(
+        0,
+        index=funding_signal.index,
+        columns=funding_signal.columns,
     )
 
-    return funding_quintiles, momentum_quintiles, positions
+    # LONG: Top composite scores (high momentum + low funding)
+    long_mask = composite_rank >= (1 - long_pct)
+    positions[long_mask] = Position.LONG.value
+
+    # SHORT: Bottom composite scores (low momentum + high funding)
+    short_mask = composite_rank <= short_pct
+    positions[short_mask] = Position.SHORT.value
+
+    return positions
 
 
 def get_long_short_coins(
